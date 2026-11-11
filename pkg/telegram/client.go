@@ -15,6 +15,26 @@ import (
 	"time"
 )
 
+// Ptr returns a pointer to any value.
+func Ptr[T any](v T) *T {
+	return &v
+}
+
+// IntPtr returns an int pointer.
+func IntPtr(v int) *int {
+	return &v
+}
+
+// StringPtr returns a string pointer.
+func StringPtr(v string) *string {
+	return &v
+}
+
+// BoolPtr returns a bool pointer.
+func BoolPtr(v bool) *bool {
+	return &v
+}
+
 // DefaultBaseURL is the official Telegram Bot API endpoint.
 const DefaultBaseURL = "https://api.telegram.org"
 

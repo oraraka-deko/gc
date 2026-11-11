@@ -144,6 +144,7 @@ type Message struct {
 	RefundedPayment      *RefundedPayment      `json:"refunded_payment,omitempty"`
 	UserShared           *UserShared           `json:"user_shared,omitempty"`
 	ChatShared           *ChatShared           `json:"chat_shared,omitempty"`
+	GuestQueryID         *string               `json:"guest_query_id,omitempty"`
 	WebAppData           *WebAppData           `json:"web_app_data,omitempty"`
 	ReplyMarkup          *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
 }
@@ -560,31 +561,85 @@ type ChosenInlineResult struct {
 	Query           string    `json:"query"`
 }
 
-// Update represents an incoming update.
+// Update represents an incoming update. At most one of the optional fields can be present in any given update.
 type Update struct {
-	UpdateID           int                 `json:"update_id"`
-	Message            *Message            `json:"message,omitempty"`
-	EditedMessage      *Message            `json:"edited_message,omitempty"`
-	ChannelPost        *Message            `json:"channel_post,omitempty"`
-	EditedChannelPost  *Message            `json:"edited_channel_post,omitempty"`
-	BusinessConnection *BusinessConnection `json:"business_connection,omitempty"`
-	BusinessMessage    *Message            `json:"business_message,omitempty"`
-	EditedBusinessMessage *Message         `json:"edited_business_message,omitempty"`
-	DeletedBusinessMessages *BusinessMessagesDeleted `json:"deleted_business_messages,omitempty"`
-	MessageReaction    *MessageReactionUpdated `json:"message_reaction,omitempty"`
-	MessageReactionCount *MessageReactionCountUpdated `json:"message_reaction_count,omitempty"`
-	InlineQuery        *InlineQuery        `json:"inline_query,omitempty"`
-	ChosenInlineResult *ChosenInlineResult `json:"chosen_inline_result,omitempty"`
-	CallbackQuery      *CallbackQuery      `json:"callback_query,omitempty"`
-	ShippingQuery      *ShippingQuery      `json:"shipping_query,omitempty"`
-	PreCheckoutQuery   *PreCheckoutQuery   `json:"pre_checkout_query,omitempty"`
-	Poll               *Poll               `json:"poll,omitempty"`
-	PollAnswer         *PollAnswer         `json:"poll_answer,omitempty"`
-	MyChatMember       *ChatMemberUpdated  `json:"my_chat_member,omitempty"`
-	ChatMember         *ChatMemberUpdated  `json:"chat_member,omitempty"`
-	ChatJoinRequest    *ChatJoinRequest    `json:"chat_join_request,omitempty"`
-	ChatBoost          *ChatBoostUpdated   `json:"chat_boost,omitempty"`
-	RemovedChatBoost   *ChatBoostRemoved   `json:"removed_chat_boost,omitempty"`
+	UpdateID                 int                       `json:"update_id"`
+	Message                  *Message                  `json:"message,omitempty"`
+	EditedMessage            *Message                  `json:"edited_message,omitempty"`
+	ChannelPost              *Message                  `json:"channel_post,omitempty"`
+	EditedChannelPost        *Message                  `json:"edited_channel_post,omitempty"`
+	BusinessConnection       *BusinessConnection       `json:"business_connection,omitempty"`
+	BusinessMessage          *Message                  `json:"business_message,omitempty"`
+	EditedBusinessMessage    *Message                  `json:"edited_business_message,omitempty"`
+	DeletedBusinessMessages  *BusinessMessagesDeleted  `json:"deleted_business_messages,omitempty"`
+	GuestMessage             *Message                  `json:"guest_message,omitempty"`
+	MessageReaction          *MessageReactionUpdated   `json:"message_reaction,omitempty"`
+	MessageReactionCount     *MessageReactionCountUpdated `json:"message_reaction_count,omitempty"`
+	InlineQuery              *InlineQuery              `json:"inline_query,omitempty"`
+	ChosenInlineResult       *ChosenInlineResult       `json:"chosen_inline_result,omitempty"`
+	CallbackQuery            *CallbackQuery            `json:"callback_query,omitempty"`
+	WidgetQuery              *WidgetQuery              `json:"widget_query,omitempty"`
+	SharedWidgetQuery        *SharedWidgetQuery        `json:"shared_widget_query,omitempty"`
+	ShippingQuery            *ShippingQuery            `json:"shipping_query,omitempty"`
+	PreCheckoutQuery         *PreCheckoutQuery         `json:"pre_checkout_query,omitempty"`
+	PurchasedPaidMedia       *PaidMediaPurchased       `json:"purchased_paid_media,omitempty"`
+	Poll                     *Poll                     `json:"poll,omitempty"`
+	PollAnswer               *PollAnswer               `json:"poll_answer,omitempty"`
+	MyChatMember             *ChatMemberUpdated        `json:"my_chat_member,omitempty"`
+	ChatMember               *ChatMemberUpdated        `json:"chat_member,omitempty"`
+	ChatJoinRequest          *ChatJoinRequest          `json:"chat_join_request,omitempty"`
+	ChatBoost                *ChatBoostUpdated         `json:"chat_boost,omitempty"`
+	RemovedChatBoost         *ChatBoostRemoved         `json:"removed_chat_boost,omitempty"`
+	ManagedBot               *ManagedBotUpdated        `json:"managed_bot,omitempty"`
+	Subscription             *BotSubscriptionUpdated   `json:"subscription,omitempty"`
+	StoppedMessageGeneration *MessageGenerationStopped `json:"stopped_message_generation,omitempty"`
+}
+
+// WidgetQuery represents a query from a widget in a message sent by the bot.
+type WidgetQuery struct {
+	ID   string  `json:"id"`
+	From User    `json:"from"`
+	Data *string `json:"data,omitempty"`
+	Chat *Chat   `json:"chat,omitempty"`
+}
+
+// SharedWidgetQuery represents a query from a forwarded message with a shared widget.
+type SharedWidgetQuery struct {
+	ID   string  `json:"id"`
+	From User    `json:"from"`
+	Data *string `json:"data,omitempty"`
+	Chat *Chat   `json:"chat,omitempty"`
+}
+
+// PaidMediaPurchased contains information about a paid media purchase.
+type PaidMediaPurchased struct {
+	From             User   `json:"from"`
+	PaidMediaPayload string `json:"paid_media_payload"`
+}
+
+// ManagedBotUpdated describes status updates for a managed bot.
+type ManagedBotUpdated struct {
+	Bot      User    `json:"bot"`
+	Owner    User    `json:"owner"`
+	Date     int64   `json:"date"`
+	NewToken *string `json:"new_token,omitempty"`
+}
+
+// BotSubscriptionUpdated describes user payment subscription changes.
+type BotSubscriptionUpdated struct {
+	Chat            Chat    `json:"chat"`
+	User            *User   `json:"user,omitempty"`
+	Date            int64   `json:"date"`
+	OldSubscription *string `json:"old_subscription,omitempty"`
+	NewSubscription *string `json:"new_subscription,omitempty"`
+}
+
+// MessageGenerationStopped describes when a user asked the bot to stop generation of a message.
+type MessageGenerationStopped struct {
+	Chat      Chat  `json:"chat"`
+	MessageID int   `json:"message_id"`
+	User      *User `json:"user,omitempty"`
+	Date      int64 `json:"date"`
 }
 
 // BusinessConnection describes the connection of the bot with a business account.

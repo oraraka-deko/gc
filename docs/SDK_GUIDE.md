@@ -290,7 +290,175 @@ func exportJSONSchemas() {
 
 ---
 
-## 6. Running the Verification Suite
+## 6. Updates Handling: JSON Serialization, Dispatcher, Long Polling & Webhooks
+
+Telegram provides two mutually exclusive mechanisms to receive incoming updates: **Long Polling** (`getUpdates`) and **Webhooks**. The SDK provides a unified `Dispatcher` that works seamlessly with both methods.
+
+### 1. JSON Serialization & Type Detection
+
+Every incoming update contains at most one of the optional update fields. The SDK dynamically inspects the update:
+
+```go
+package main
+
+import (
+	"fmt"
+	"gc/pkg/telegram"
+)
+
+func processRawUpdate(jsonData []byte) {
+	update, err := telegram.UnmarshalUpdate(jsonData)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Update ID: %d, Type: %s\n", update.UpdateID, update.Type())
+	fmt.Printf("Sender: %v, Chat: %v\n", update.Sender(), update.Chat())
+}
+```
+
+### 2. Setting Up the Dispatcher & Commands
+
+The `Dispatcher` provides typed routing, command argument parsing, and middleware chaining:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"gc/pkg/telegram"
+)
+
+func createDispatcher() *telegram.Dispatcher {
+	d := telegram.NewDispatcher()
+
+	// Global logging middleware
+	d.Use(telegram.LoggingMiddleware(func(format string, args ...any) {
+		fmt.Printf(format+"\n", args...)
+	}))
+
+	// Panic recovery middleware
+	d.Use(telegram.RecoveryMiddleware(func(ctx context.Context, u *telegram.Update, r any) {
+		fmt.Printf("Recovered from panic on update %d: %v\n", u.UpdateID, r)
+	}))
+
+	// Handle /start command with arguments (e.g. /start referral_123)
+	d.OnCommand("start", func(ctx context.Context, m *telegram.Message, args []string) error {
+		fmt.Printf("Received /start from user %d with args: %v\n", m.From.ID, args)
+		return nil
+	})
+
+	// Handle incoming messages
+	d.OnMessage(func(ctx context.Context, m *telegram.Message) error {
+		if m.Text != nil {
+			fmt.Printf("Message: %s\n", *m.Text)
+		}
+		return nil
+	})
+
+	// Handle callback query buttons
+	d.OnCallbackData("action:", func(ctx context.Context, cq *telegram.CallbackQuery) error {
+		fmt.Printf("Callback triggered: %s\n", *cq.Data)
+		return nil
+	})
+
+	// Handle chat join requests
+	d.OnChatJoinRequest(func(ctx context.Context, cjr *telegram.ChatJoinRequest) error {
+		fmt.Printf("User %d requested to join chat %s\n", cjr.From.ID, cjr.Chat.Title)
+		return nil
+	})
+
+	return d
+}
+```
+
+### 3. Long Polling Method
+
+Long polling continuously requests updates from Telegram. `LongPoller` automatically removes any old webhook, advances update offsets (`offset = updateID + 1`), supports worker pools, and handles exponential backoff:
+
+```go
+package main
+
+import (
+	"context"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"gc/pkg/telegram"
+)
+
+func runLongPolling() {
+	client := telegram.NewClient(os.Getenv("TELEGRAM_BOT_TOKEN"))
+	dispatcher := createDispatcher()
+
+	poller := telegram.NewLongPoller(client, dispatcher,
+		telegram.WithPollTimeout(30),                    // 30 second long poll
+		telegram.WithPollWorkers(4),                     // 4 concurrent workers
+		telegram.WithDropPendingUpdates(true),           // Drop old backlog on start
+		telegram.WithPollInterval(50*time.Millisecond),  // Jitter
+	)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	// Blocks until context is canceled (SIGINT/SIGTERM)
+	if err := poller.Start(ctx); err != nil {
+		panic(err)
+	}
+}
+```
+
+### 4. Webhook Method
+
+For production environments behind HTTPS, the `WebhookHandler` implements `http.Handler` and validates the `X-Telegram-Bot-Api-Secret-Token` header:
+
+```go
+package main
+
+import (
+	"context"
+	"net/http"
+	"os"
+
+	"gc/pkg/telegram"
+)
+
+func runWebhook() {
+	client := telegram.NewClient(os.Getenv("TELEGRAM_BOT_TOKEN"))
+	dispatcher := createDispatcher()
+
+	secretToken := "your-secret-token-12345"
+	webhookURL := "https://your-domain.com/telegram-webhook"
+
+	// 1. Register webhook with Telegram
+	ctx := context.Background()
+	_, err := telegram.SetupWebhook(ctx, client, telegram.WebhookConfig{
+		URL:                webhookURL,
+		SecretToken:        secretToken,
+		DropPendingUpdates: false,
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	// 2. Start HTTP server with WebhookHandler
+	webhookHandler := telegram.NewWebhookHandler(dispatcher,
+		telegram.WithWebhookSecretToken(secretToken),
+		telegram.WithWebhookWorkers(8), // Async worker pool
+	)
+
+	http.Handle("/telegram-webhook", webhookHandler)
+	http.ListenAndServe(":8080", nil)
+}
+```
+
+---
+
+## 7. Running the Verification Suite
 
 Run the test suite against Telegram Bot API servers using your token via flag or environment variable:
 
@@ -303,7 +471,42 @@ go run cmd/testbot/main.go -token <YOUR_BOT_TOKEN>
 export TELEGRAM_BOT_TOKEN="<YOUR_BOT_TOKEN>"
 go run cmd/testbot/main.go
 
-# On Windows (PowerShell):
+---
+
+## 8. Example Bot: Live Crypto & TON Converter (`examples/crypto_converter_bot`)
+
+A complete, production-grade example bot that handles realtime cryptocurrency rates, conversions, and 24h market trends across **Direct Chat**, **Groups**, and **Inline Mode**.
+
+### Supported Queries
+
+The bot features a flexible natural-language tokenizer that parses queries regardless of spacing, capitalization, or order:
+- **Single Tokens / Prices**: `1 ton`, `1 TOn`, `1Ton`, `1grAm` (Gram = TON), `gram1`, `ton1`, `gram   1`, `gram`, `ton`, `usdt`
+- **Conversions**: `500ton tron`, `tron 500`, `tron ton`, `usdt tron`, `tron usdt`, `500 ton to tron`, `btc to usdt`
+
+### Architecture & Components
+
+1. **`rates.go` (Multi-Source Realtime Engine)**:
+   - Queries **TonAPI.io** first for TON, TRX, and USDT rates with 24-hour differential strings.
+   - Falls back gracefully to **Binance**, **CoinGecko**, and **OKX** on timeouts or connection issues.
+   - In-memory 20-second cache prevents rate limiting while keeping data accurate.
+
+2. **`parser.go` (Flexible Tokenizer)**:
+   - Normalizes text, filters filler words (`to`, `into`, `convert`), and handles glued numbers (`500ton` -> `500` + `TON`).
+   - Maps aliases: `gram` -> `TON`, `tron` -> `TRX`, `tether` / `$` -> `USDT`.
+
+3. **`main.go` (Dispatcher & Multi-Mode Routing)**:
+   - **Direct Chats & Groups**: Responds directly with formatted HTML prices and inline keyboards.
+   - **Inline Mode**: Responds to `@Giftshaper_bot <query>` with instantaneous `InlineQueryResultArticle` cards that users can send to any chat.
+   - **Interactive Callbacks**: Tapping `[🔄 Refresh Rate]` instantly refreshes the message with the latest live market price.
+
+### Running the Example
+
+```bash
+# Using flag:
+go run ./examples/crypto_converter_bot -token <YOUR_BOT_TOKEN>
+
+# Or using environment variable:
 $env:TELEGRAM_BOT_TOKEN="<YOUR_BOT_TOKEN>"
-go run cmd/testbot/main.go
+go run ./examples/crypto_converter_bot
 ```
+

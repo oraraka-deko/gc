@@ -83,13 +83,53 @@ func main() {
 	}
 	fmt.Println("    [+] Mini App HMAC-SHA256 Signature Verification: PASSED")
 
+	// 4. Test Updates Unmarshaling & Dispatcher Core
+	fmt.Println("\n[4] Testing Updates Unmarshaling, Dispatcher, LongPoller & Webhook Core...")
+	sampleUpdateJSON := []byte(`{
+		"update_id": 9901,
+		"message": {
+			"message_id": 42,
+			"date": 1700000000,
+			"chat": {"id": 123456, "type": "private"},
+			"from": {"id": 123456, "is_bot": false, "first_name": "Developer"},
+			"text": "/start from_test"
+		}
+	}`)
+
+	update, err := telegram.UnmarshalUpdate(sampleUpdateJSON)
+	if err != nil || update.Type() != telegram.UpdateTypeMessage {
+		fmt.Printf("    [!] FAILED: update unmarshal error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("    [+] JSON Update Unmarshaled: ID=%d, Type=%s, Text=%q\n", update.UpdateID, update.Type(), update.Text())
+
+	dispatcher := telegram.NewDispatcher()
+	commandHandled := false
+	dispatcher.OnCommand("start", func(ctx context.Context, m *telegram.Message, args []string) error {
+		commandHandled = true
+		return nil
+	})
+
+	if err := dispatcher.Handle(context.Background(), update); err != nil || !commandHandled {
+		fmt.Printf("    [!] FAILED: Dispatcher command routing failed\n")
+		os.Exit(1)
+	}
+	fmt.Println("    [+] Dispatcher Routing & Command Execution: PASSED")
+
+	webhook := telegram.NewWebhookHandler(dispatcher, telegram.WithWebhookSecretToken("sec_tok_123"))
+	if webhook == nil {
+		fmt.Printf("    [!] FAILED: Webhook initialization\n")
+		os.Exit(1)
+	}
+	fmt.Println("    [+] Webhook Handler Initialization: PASSED")
+
 	if token == "" {
 		fmt.Println("\n[!] Skipping live Telegram Bot API tests because no token was supplied.")
 		return
 	}
 
-	// 4. Live API Test with Provided Token
-	fmt.Println("\n[4] Running Live Test against Telegram Bot API (https://api.telegram.org)...")
+	// 5. Live API Test with Provided Token
+	fmt.Println("\n[5] Running Live Test against Telegram Bot API (https://api.telegram.org)...")
 	client := telegram.NewClient(token, telegram.WithTimeout(10*time.Second))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -125,6 +165,17 @@ func main() {
 	}
 	if user.SupportsInlineQueries != nil {
 		fmt.Printf("    - Supports Inline Queries:  %v\n", *user.SupportsInlineQueries)
+	}
+
+	// Test getUpdates (polling test)
+	updates, err := client.GetUpdates(ctx, &telegram.GetUpdatesParams{
+		Limit:   telegram.IntPtr(1),
+		Timeout: telegram.IntPtr(0),
+	})
+	if err != nil {
+		fmt.Printf("    - Polling Status:           Check returned notice (%v)\n", err)
+	} else {
+		fmt.Printf("    - Polling Status:           Active, pending updates in queue: %d\n", len(updates))
 	}
 
 	// Also test getMyCommands
