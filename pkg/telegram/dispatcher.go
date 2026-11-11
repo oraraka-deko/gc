@@ -245,6 +245,26 @@ func (d *Dispatcher) OnGuestMessage(fn func(ctx context.Context, gm *Message) er
 	})
 }
 
+// OnPreCheckoutQuery registers a handler for pre-checkout queries.
+func (d *Dispatcher) OnPreCheckoutQuery(fn func(ctx context.Context, pcq *PreCheckoutQuery) error) *Dispatcher {
+	return d.On(UpdateTypePreCheckoutQuery, func(ctx context.Context, u *Update) error {
+		if u.PreCheckoutQuery != nil {
+			return fn(ctx, u.PreCheckoutQuery)
+		}
+		return nil
+	})
+}
+
+// OnShippingQuery registers a handler for shipping queries.
+func (d *Dispatcher) OnShippingQuery(fn func(ctx context.Context, sq *ShippingQuery) error) *Dispatcher {
+	return d.On(UpdateTypeShippingQuery, func(ctx context.Context, u *Update) error {
+		if u.ShippingQuery != nil {
+			return fn(ctx, u.ShippingQuery)
+		}
+		return nil
+	})
+}
+
 // Handle executes the middleware chain and dispatches the update to matched handlers.
 func (d *Dispatcher) Handle(ctx context.Context, u *Update) error {
 	if u == nil {

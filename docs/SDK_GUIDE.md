@@ -510,3 +510,216 @@ $env:TELEGRAM_BOT_TOKEN="<YOUR_BOT_TOKEN>"
 go run ./examples/crypto_converter_bot
 ```
 
+---
+
+## 9. Storage Tier: FastCache & Pebble (`pkg/storage`)
+
+The storage tier provides a unified dual-tier caching and durable persistence architecture:
+
+```go
+package main
+
+import (
+	"time"
+	"gc/pkg/storage"
+)
+
+func main() {
+	store, err := storage.New(storage.Config{
+		PebblePath:     "./data/pebble",
+		FastCacheBytes: 64 * 1024 * 1024, // 64 MB zero-GC in-memory cache
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer store.Close()
+
+	// 1. In-Memory FastCache with TTL and Idempotency
+	store.Fast.Set("key:1", []byte("value"), 5*time.Minute)
+	
+	// Atomic check-and-set idempotency key (returns true if first, false if duplicate)
+	if store.Fast.SetIdempotency("req:9988", []byte("1"), 24*time.Hour) {
+		// Process request
+	}
+
+	// Nonce replay check
+	if !store.Fast.CheckNonce("nonce_abc123", 10*time.Minute) {
+		// Replay detected!
+	}
+
+	// 2. Durable Pebble LSM-Tree with Atomic Batches
+	batch := store.Pebble.NewBatch()
+	_ = batch.Set([]byte(storage.NSAccount+"user:1:main:TON"), []byte("..."))
+	_ = batch.Commit(true) // Synchronous disk WAL flush
+
+	// Range prefix iteration
+	_ = store.Pebble.PrefixScan([]byte(storage.NSAccount), func(k, v []byte) bool {
+		// iterate accounts
+		return true // continue
+	})
+}
+```
+
+---
+
+## 10. Double-Entry Financial Ledger (`pkg/ledger`)
+
+The ledger provides a strict double-entry accounting engine where $\sum \text{Debits} == \sum \text{Credits}$ for all operations. All amounts are stored in atomic `uint64` units to prevent any floating-point precision loss.
+
+### Assets & Units
+- **Telegram Stars (`XTR`)**: 0 decimals (integer Stars).
+- **TON (`TON`)**: 9 decimals ($10^9$ nanoTON).
+- **USDT (`USDT`)**: 6 decimals ($10^6$ microUSDT).
+
+### Deposit, Withdraw, and Transfer
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"gc/pkg/ledger"
+	"gc/pkg/storage"
+)
+
+func main() {
+	store, _ := storage.New(storage.Config{PebblePath: "./data/pebble"})
+	defer store.Close()
+	led := ledger.New(store)
+	ctx := context.Background()
+
+	userID := int64(12345)
+
+	// 1. Deposit 5.5 TON (5,500,000,000 nanoTON)
+	depositAmount := ledger.TONToNano(5.5)
+	_, _ = led.Deposit(ctx, userID, ledger.AssetTON, depositAmount, "dep_tx_001", "User deposit")
+
+	// 2. Query Balance
+	acc, _ := led.GetAccount(ctx, ledger.UserMainAccount(userID, ledger.AssetTON))
+	fmt.Printf("User Available: %s\n", ledger.FormatAtomic(acc.Available, ledger.AssetTON)) // 5.5 TON
+
+	// 3. Instant Internal Transfer (User 12345 -> User 67890)
+	_, _ = led.InternalTransfer(ctx, 12345, 67890, ledger.AssetTON, ledger.TONToNano(1.0), "xfr_002", "Gift")
+
+	// 4. Two-Phase Transfer (Reserve -> Settle / Void)
+	transferID := "escrow_tx_999"
+	pt, _ := led.Reserve(ctx, transferID, 12345, ledger.UserMainAccount(67890, ledger.AssetTON), ledger.AssetTON, ledger.TONToNano(2.0), nil)
+	// Funds are now moved from user:12345:main:TON to user:12345:locked:TON
+
+	// Option A: Settle when condition met
+	_ = led.Settle(ctx, transferID)
+
+	// Option B: Void to refund locked funds back to available
+	// _ = led.Void(ctx, transferID, "user cancelled order")
+}
+```
+
+---
+
+## 11. Multi-Asset Income Verifier & Transactional Outbox
+
+### Multi-Asset Verifier (`pkg/ledger/verifier.go`)
+Validates incoming payments from Telegram Stars, on-chain TON coin, and Jetton USDT:
+
+```go
+pipeline := ledger.NewIncomePipeline(led, store)
+
+// Telegram Stars pre-checkout validation
+ok, errMsg, err := pipeline.ValidatePreCheckout(ctx, preCheckoutQuery)
+
+// Telegram Stars successful payment credit
+entry, err := pipeline.ProcessStarsPayment(ctx, successfulPayment, user)
+
+// TON on-chain deposit with memo routing
+entry, err := pipeline.ProcessTONDeposit(ctx, txHash, fromAddr, toAddr, amountNano, "user_12345")
+
+// Jetton USDT deposit
+entry, err := pipeline.ProcessJettonDeposit(ctx, txHash, "USDT", fromAddr, amountMicro, "12345")
+```
+
+### Outbound Transactional Outbox & Signer (`pkg/wallet`)
+
+Guarantees zero double-spends and safe state transitions for withdrawals:
+
+```go
+signer, _ := wallet.NewMockSigner()
+outbox := wallet.NewOutboxManager(store, led, signer, wallet.OutboxConfig{
+	MaxBatchSize: 254, // Highload Wallet v3 limit
+})
+
+// 1. Enqueue (automatically reserves user funds in ledger)
+tx, _ := outbox.Enqueue(ctx, userID, ledger.AssetTON, ledger.TONToNano(3.0), "EQDestAddress...", "memo")
+
+// 2. Batch Sign (bundles queued transfers into a Highload v3 message)
+batch, _ := outbox.ProcessNextBatch(ctx)
+
+// 3. Broadcast to TON network
+_ = outbox.MarkBroadcasted(ctx, tx.ID, "0xchain_hash...")
+
+// 4. Confirm on-chain finalize (settles ledger transfer)
+_ = outbox.Confirm(ctx, tx.ID, "0xchain_hash...")
+
+// If broadcast fails permanently:
+// _ = outbox.Fail(ctx, tx.ID, "network error") // Automatically refunds user funds
+```
+
+---
+
+## 12. Tickless Loop-of-Loops Workflow Engine (`pkg/workflow`)
+
+An advanced workflow engine executing outer cycle loops and inner batch steps with tickless state suspension:
+
+```go
+wfEngine := workflow.NewEngine(store, led, botClient)
+
+// Register Workflow Schema
+wf := &workflow.WorkflowDef{
+	ID:   "p2p_trade",
+	Name: "P2P Trade Workflow",
+	Steps: []workflow.StepDef{
+		{
+			ID:   "reserve_step",
+			Type: workflow.StepActionLedgerReserve,
+			Params: map[string]any{
+				"from_user":  int64(1001),
+				"to_account": ledger.UserMainAccount(2002, ledger.AssetTON),
+				"asset":      ledger.AssetTON,
+				"amount":     ledger.TONToNano(5.0),
+			},
+		},
+		{
+			ID:   "wait_for_confirmation",
+			Type: workflow.StepActionWaitEvent,
+			Params: map[string]any{
+				"event": "buyer_confirmed",
+			},
+		},
+		{
+			ID:   "settle_step",
+			Type: workflow.StepActionLedgerSettle,
+		},
+	},
+}
+_ = wfEngine.RegisterWorkflow(wf)
+
+// 1. Start Instance: Runs until wait_for_confirmation, serializes state to Pebble, and halts goroutine
+inst, _ := wfEngine.StartInstance(ctx, "p2p_trade", nil)
+fmt.Println(inst.State) // "SUSPENDED"
+
+// 2. Resume when external event occurs
+resumed, _ := wfEngine.ResumeInstance(ctx, inst.InstanceID, "buyer_confirmed", "confirmed_by_buyer")
+fmt.Println(resumed.State) // "COMPLETED"
+```
+
+---
+
+## 13. Full End-to-End Integration Demo (`examples/ledger_workflow_demo`)
+
+Run the complete integrated demonstration combining the storage tier, double-entry ledger, outbox manager, and tickless workflow engine:
+
+```bash
+go run ./examples/ledger_workflow_demo
+```
+
+
