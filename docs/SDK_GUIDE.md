@@ -234,7 +234,142 @@ func configureFeedbackAndStorage() {
 
 ---
 
-## 5. Schema Builder & Dynamic Validation
+## 5. Mini App User Accounts & Social/Inventory Models (`pkg/miniapp`)
+
+`pkg/miniapp` provides complete Go models adapted from Telegram Mini App `initData`, featuring a nullable architecture where optional sub-models (profile, social graph, device identity, inventory, financials, activity heatmap) only exist if needed by your application.
+
+### 1. Initializing UserAccount from `initData`
+
+```go
+package main
+
+import (
+	"fmt"
+	"time"
+	"gc/pkg/miniapp"
+)
+
+func handleUserLogin(rawInitData string) {
+	// Parse validated initData
+	initData, _ := miniapp.ParseInitData(rawInitData)
+
+	// Create root UserAccount (MiniAppUser)
+	user := miniapp.NewUserAccountFromInitData(initData)
+	fmt.Printf("User: %d (Status: %s)\n", user.UserID, user.AccountStatus)
+
+	// 2. Attach nullable inventory balances (e.g. Stars and TON)
+	stars := int64(250)
+	tonNano := "5000000000" // string avoids float precision loss
+	user.Inventory = &miniapp.UserInventory{
+		Balances: &miniapp.InventoryBalances{
+			Stars:   &stars,
+			TONNano: &tonNano,
+		},
+		Collectibles: []miniapp.CollectibleItem{
+			{
+				AssetID:    "gift_rare_frog",
+				ItemType:   miniapp.CollectibleNFTGift,
+				AcquiredAt: time.Now().UnixMilli(),
+			},
+		},
+	}
+
+	// 3. Record engagement heatmap session
+	user.RecordSession(time.Now().UnixMilli())
+}
+```
+
+### 2. Multi-Layer Referral & Anti-Sybil Graph
+
+Track direct (L1) and indirect (L2+) viral referral trees with anti-cheat milestones:
+
+```go
+rel := &miniapp.ReferralRelationship{
+	ID:         "ref_1001_2002",
+	ReferrerID: 1001,
+	InviteeID:  2002,
+	LayerDepth: 1,
+	Status:     miniapp.ReferralPendingRequirements,
+	Requirements: []miniapp.ReferralRequirementProgress{
+		{ActionType: miniapp.ActionVerifyTelegramPremium, RequiredValue: 1, IsCompleted: true},
+		{ActionType: miniapp.ActionSpendStars, RequiredValue: 50, CurrentValue: 0},
+	},
+	RewardConfig: miniapp.ReferralRewardConfig{
+		InviterCurrency: "stars",
+		InviterAmount:   25,
+	},
+}
+
+// When invitee spends Stars, progress updates and automatically qualifies:
+if rel.UpdateProgress(miniapp.ActionSpendStars, 50) {
+	fmt.Println("Referral qualified! Reward credited to inviter.")
+}
+```
+
+### 3. Audience Eligibility & Promo Codes
+
+Target bonuses, promo codes, and daily chests based on account age, premium status, and sybil scoring:
+
+```go
+rule := miniapp.EligibilityAudienceRule{
+	MinAccountAgeDays:      miniapp.IntPtr(30),
+	RequireTelegramPremium: miniapp.BoolPtr(true),
+	ExcludedRiskStatuses:   []string{"flagged_sybil", "suspended"},
+}
+
+if ok, reason := rule.IsEligible(user); !ok {
+	fmt.Printf("User ineligible: %s\n", reason)
+}
+```
+
+### 4. Tasks with External Callback Verification
+
+```go
+task := &miniapp.TaskDefinition{
+	TaskID:   "task_channel_sub",
+	Category: miniapp.TaskCategoryOnboarding,
+	TaskType: miniapp.TaskTypeInstantTelegramChannel,
+	VerificationConfig: miniapp.TaskVerificationConfig{
+		TargetMetric:        miniapp.StringPtr("get_chat_member"),
+		RequiredTargetCount: 1,
+	},
+	Rewards: miniapp.TaskRewards{
+		Currencies: map[string]float64{"coins": 1000},
+	},
+}
+```
+
+### 5. Raffles & Provably Fair Giveaways
+
+```go
+raffle := &miniapp.RaffleObject{
+	RaffleID:         "raf_weekly_stars",
+	CreatorUserID:    123456,
+	Title:            "Weekly 500 Stars Giveaway",
+	MonetizationType: miniapp.MonetizationFree,
+	StartsAt:         time.Now().UnixMilli(),
+	EndsAt:           time.Now().Add(7 * 24 * time.Hour).UnixMilli(),
+	Status:           miniapp.RaffleStatusActive,
+	Prizes: []miniapp.RafflePrize{
+		{
+			PrizeID:                 "prz_1",
+			Rank:                    1,
+			Title:                   "500 Stars",
+			PrizeType:               miniapp.PrizeStars,
+			Value:                   500,
+			WinnerCountForThisPrize: 1,
+		},
+	},
+	SelectionConfig: miniapp.WinnerSelectionConfig{
+		Preset:                   miniapp.PresetRandomProvablyFair,
+		AllowMultipleWinsPerUser: false,
+	},
+}
+```
+
+---
+
+## 6. Schema Builder & Dynamic Validation
 
 The `pkg/schema` package enables runtime validation, dynamic payload construction, and JSON Schema generation.
 

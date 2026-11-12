@@ -20,6 +20,19 @@ We engineered a comprehensive, production-grade Telegram Bot & Mini App ecosyste
    - `examples/crypto_converter_bot`: Live multi-mode natural language currency bot on `@Giftshaper_bot`.
    - `examples/ledger_workflow_demo`: Complete demonstration running ledger, verifier, outbox, and escrow workflow.
    - Comprehensive unit and integration test coverage across all packages (100% passing).
+8. **Enriched UserAccount, Social Graph & Gamification Models (`pkg/miniapp`)**:
+   - `MiniAppUser` (`UserAccount`) root aggregate model with native Telegram Mini App `initData` (`WebAppUser`) integration.
+   - Nullable, zero-overhead architecture: all sub-models (`Profile`, `Social`, `Device`, `Inventory`, `Financials`, `Activity`) are pointers with `omitempty`, allowing apps to store only the assets and metadata they require.
+   - Multi-layer referral tracking (`ReferralRelationship`) with progressive milestone qualifications and anti-sybil risk scoring.
+   - Audience targeting rules (`EligibilityAudienceRule`), promo codes, dynamic multipliers, and daily reward chests (`DailyCaseConfig`).
+   - Tasks and quest achievements with callback/webhook verification (`TaskDefinition`, `UserTaskProgress`).
+   - Provably fair raffles and prize pool distribution (`RaffleObject`, `RaffleEntry`).
+9. **Real-Time Mini-Game Engines & Double-Entry Ledger Integration (`pkg/games`)**:
+   - **Ball Escape**: Cryptographic HMAC-SHA256 seed commitments, two-phase wager reservation (`ledger.Reserve`), constant-time signature verification on claim, and replay-proof payout settlement (`ledger.Settle` + `ledger.Deposit`).
+   - **Tower Climb**: 3 difficulty configurations (`easy`, `medium`, `master`), provably fair bomb columns derived from SHA-256(`serverSeed:roundId:row`), step-by-step tile picks, grand win multipliers (up to 581.25x), intermediate cashouts, and auto-cashout of unfinished winning rounds.
+   - **Territory Pot Multiplayer**: Dynamic NPC bot competitor injection, mixed currency pots (Stars + TON), 250ms real-time game loop ticker, SHA-256 weighted winner selection, and automatic double-entry pot payouts to real winners.
+   - **Unified GameServer & WebSocket (`pkg/games/server.go`)**: Dedicated single-writer channels preventing concurrent websocket write panics, CORS headers for Flutter Web, and bounded 64KB JSON body reading.
+   - **100+ Concurrent User Invariant Tested**: Passed test suite with 105 simultaneous concurrent players active across all three games without race conditions or ledger invariant violations.
 
 ---
 
