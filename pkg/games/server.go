@@ -23,13 +23,18 @@ var upgrader = websocket.Upgrader{
 
 // GameServer multiplexes the HTTP and WebSocket endpoints for all mini-games.
 type GameServer struct {
-	Ledger     *ledger.Ledger
-	Storage    *storage.Storage
-	Territory  *TerritoryEngine
-	BallEscape *BallEscapeEngine
-	Tower      *TowerEngine
-	Hub        *ClientHub
-	BotToken   string
+	Ledger      *ledger.Ledger
+	Storage     *storage.Storage
+	Territory   *TerritoryEngine
+	BallEscape  *BallEscapeEngine
+	Tower       *TowerEngine
+	Coins       *CoinEngine
+	Mines       *MinesEngine
+	Plinko      *PlinkoEngine
+	HigherLower *HigherLowerEngine
+	Upgrade     *UpgradeEngine
+	Hub         *ClientHub
+	BotToken    string
 }
 
 // NewGameServer constructs a fully wired GameServer instance.
@@ -39,13 +44,18 @@ func NewGameServer(led *ledger.Ledger, store *storage.Storage, optionalBotToken 
 		botToken = optionalBotToken[0]
 	}
 	return &GameServer{
-		Ledger:     led,
-		Storage:    store,
-		Territory:  NewTerritoryEngine(led),
-		BallEscape: NewBallEscapeEngine(led, DefaultBallEscapeSecret),
-		Tower:      NewTowerEngine(led),
-		Hub:        NewClientHub(),
-		BotToken:   botToken,
+		Ledger:      led,
+		Storage:     store,
+		Territory:   NewTerritoryEngine(led),
+		BallEscape:  NewBallEscapeEngine(led, DefaultBallEscapeSecret),
+		Tower:       NewTowerEngine(led),
+		Coins:       NewCoinEngine(led),
+		Mines:       NewMinesEngine(led),
+		Plinko:      NewPlinkoEngine(led),
+		HigherLower: NewHigherLowerEngine(led),
+		Upgrade:     NewUpgradeEngine(led),
+		Hub:         NewClientHub(),
+		BotToken:    botToken,
 	}
 }
 
@@ -76,11 +86,22 @@ func (s *GameServer) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/bet", s.HandlePlaceBet)
 	mux.HandleFunc("/api/history", s.HandleHistory)
 	mux.HandleFunc("/api/user/sync", s.HandleUserSync)
+	mux.HandleFunc("/api/gifts/catalog", s.HandleGiftsCatalog)
 	mux.HandleFunc("/api/ball-escape/start", s.HandleBallEscapeStart)
 	mux.HandleFunc("/api/ball-escape/claim", s.HandleBallEscapeClaim)
 	mux.HandleFunc("/api/tower/start", s.HandleTowerStart)
 	mux.HandleFunc("/api/tower/pick", s.HandleTowerPick)
 	mux.HandleFunc("/api/tower/cashout", s.HandleTowerCashout)
+	mux.HandleFunc("/api/coins/flip", s.HandleCoinFlip)
+	mux.HandleFunc("/api/coins/cashout", s.HandleCoinCashout)
+	mux.HandleFunc("/api/mines/start", s.HandleMinesStart)
+	mux.HandleFunc("/api/mines/reveal", s.HandleMinesReveal)
+	mux.HandleFunc("/api/mines/cashout", s.HandleMinesCashout)
+	mux.HandleFunc("/api/plinko/drop", s.HandlePlinkoDrop)
+	mux.HandleFunc("/api/higher-lower/start", s.HandleHLStart)
+	mux.HandleFunc("/api/higher-lower/guess", s.HandleHLGuess)
+	mux.HandleFunc("/api/higher-lower/cashout", s.HandleHLCashout)
+	mux.HandleFunc("/api/upgrade/spin", s.HandleUpgradeSpin)
 	mux.HandleFunc("/ws", s.HandleWebSocket)
 }
 
