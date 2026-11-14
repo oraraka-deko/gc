@@ -28,16 +28,24 @@ type GameServer struct {
 	Territory  *TerritoryEngine
 	BallEscape *BallEscapeEngine
 	Tower      *TowerEngine
+	Hub        *ClientHub
+	BotToken   string
 }
 
 // NewGameServer constructs a fully wired GameServer instance.
-func NewGameServer(led *ledger.Ledger, store *storage.Storage) *GameServer {
+func NewGameServer(led *ledger.Ledger, store *storage.Storage, optionalBotToken ...string) *GameServer {
+	botToken := ""
+	if len(optionalBotToken) > 0 {
+		botToken = optionalBotToken[0]
+	}
 	return &GameServer{
 		Ledger:     led,
 		Storage:    store,
 		Territory:  NewTerritoryEngine(led),
 		BallEscape: NewBallEscapeEngine(led, DefaultBallEscapeSecret),
 		Tower:      NewTowerEngine(led),
+		Hub:        NewClientHub(),
+		BotToken:   botToken,
 	}
 }
 
@@ -67,6 +75,7 @@ func (s *GameServer) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/round/current", s.HandleCurrentRound)
 	mux.HandleFunc("/api/bet", s.HandlePlaceBet)
 	mux.HandleFunc("/api/history", s.HandleHistory)
+	mux.HandleFunc("/api/user/sync", s.HandleUserSync)
 	mux.HandleFunc("/api/ball-escape/start", s.HandleBallEscapeStart)
 	mux.HandleFunc("/api/ball-escape/claim", s.HandleBallEscapeClaim)
 	mux.HandleFunc("/api/tower/start", s.HandleTowerStart)
