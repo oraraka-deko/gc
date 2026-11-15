@@ -21,6 +21,8 @@ func main() {
 	port := flag.Int("port", 8080, "Port to run the HTTP/WS backend server on")
 	dataDir := flag.String("data", "./data", "Directory for Pebble database and local storage")
 	botTokenFlag := flag.String("token", "", "Telegram Bot Token for initData verification")
+	cfEndpointFlag := flag.String("cf-endpoint", "", "Cloudflare D1 Storage Gateway URL")
+	cfTokenFlag := flag.String("cf-token", "", "Cloudflare Gateway Bearer Token")
 	flag.Parse()
 
 	botToken := *botTokenFlag
@@ -28,9 +30,26 @@ func main() {
 		botToken = os.Getenv("TELEGRAM_BOT_TOKEN")
 	}
 
+	cfEndpoint := *cfEndpointFlag
+	if cfEndpoint == "" {
+		cfEndpoint = os.Getenv("CF_STORAGE_ENDPOINT")
+	}
+	if cfEndpoint == "" {
+		cfEndpoint = "https://cf-storage-gateway.worker-inosuke.workers.dev"
+	}
+
+	cfToken := *cfTokenFlag
+	if cfToken == "" {
+		cfToken = os.Getenv("CF_STORAGE_TOKEN")
+	}
+	if cfToken == "" {
+		cfToken = ""
+	}
+
 	log.Printf("================================================================================")
 	log.Printf(" Starting MiniApp Unified Backend Server on :%d", *port)
 	log.Printf(" Storage directory: %s", *dataDir)
+	log.Printf(" Cloudflare Gateway: %s", cfEndpoint)
 	if botToken != "" {
 		log.Printf(" Bot Token configured: %s...%s", botToken[:4], botToken[len(botToken)-4:])
 	} else {
@@ -38,16 +57,23 @@ func main() {
 	}
 	log.Printf("================================================================================")
 
-	// 1. Initialize Storage Tier (Pebble + FastCache)
+	// 1. Initialize Storage Tier (Pebble + FastCache + WriteBehind Cloudflare Gateway)
 	store, err := storage.New(storage.Config{
-		PebblePath:     filepath.Join(*dataDir, "pebble"),
-		FastCacheBytes: 32 * 1024 * 1024, // 32MB in-memory cache
+		PebblePath:         filepath.Join(*dataDir, "pebble"),
+		FastCacheBytes:     32 * 1024 * 1024, // 32MB in-memory cache
+		CloudflareEndpoint: cfEndpoint,
+		CloudflareToken:    cfToken,
+		FlushIntervalIdle:  500 * time.Millisecond,
+		MaxDirtyAge:        15 * time.Second,
+		MaxDirtyKeys:       2000,
+		MaxBatchSize:       250,
+		LoadThreshold:      50,
 	})
 	if err != nil {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
 	defer store.Close()
-	log.Printf("[+] Storage tier initialized (Pebble LSM-tree + FastCache)")
+	log.Printf("[+] Storage tier initialized (RAM Shards + Pebble LSM WAL + Cloudflare D1/DO Sync)")
 
 	// 2. Initialize Double-Entry Ledger Core
 	led := ledger.New(store)
