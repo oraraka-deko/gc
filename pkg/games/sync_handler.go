@@ -140,6 +140,29 @@ func (s *GameServer) HandleUserSync(w http.ResponseWriter, r *http.Request) {
 	stars := s.getUserBalance(ctx, user.ID, "stars")
 	usdtMicro := s.getUserBalance(ctx, user.ID, "usdt_micro")
 
+	// Ensure profile is persisted into WriteBehindStore / RAM
+	if s.UserManager != nil {
+		_, _ = s.UserManager.EnsureUser(ctx, user)
+	}
+
+	// Fetch any user gifts from RAM / WriteBehindStore
+	var giftList []map[string]any
+	if s.UserManager != nil {
+		if gifts, err := s.UserManager.GetUserGifts(ctx, user.ID); err == nil && len(gifts) > 0 {
+			for _, g := range gifts {
+				giftList = append(giftList, map[string]any{
+					"asset_id":    g.AssetID,
+					"item_type":   g.ItemType,
+					"acquired_at": g.AcquiredAt,
+					"metadata":    g.Metadata,
+				})
+			}
+		}
+	}
+	if giftList == nil {
+		giftList = []map[string]any{}
+	}
+
 	usernameStr := ""
 	if user.Username != nil {
 		usernameStr = *user.Username
@@ -154,7 +177,7 @@ func (s *GameServer) HandleUserSync(w http.ResponseWriter, r *http.Request) {
 			"stars":      stars,
 			"usdt_micro": strconv.FormatUint(usdtMicro, 10),
 		},
-		Gifts:      []map[string]any{},
+		Gifts:      giftList,
 		ServerTime: time.Now().Unix(),
 	}
 

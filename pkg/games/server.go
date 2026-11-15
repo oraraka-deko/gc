@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"gc/pkg/ledger"
+	"gc/pkg/miniapp"
 	"gc/pkg/storage"
 )
 
@@ -25,6 +26,7 @@ var upgrader = websocket.Upgrader{
 type GameServer struct {
 	Ledger      *ledger.Ledger
 	Storage     *storage.Storage
+	UserManager *miniapp.StoreUserManager
 	Territory   *TerritoryEngine
 	BallEscape  *BallEscapeEngine
 	Tower       *TowerEngine
@@ -43,9 +45,14 @@ func NewGameServer(led *ledger.Ledger, store *storage.Storage, optionalBotToken 
 	if len(optionalBotToken) > 0 {
 		botToken = optionalBotToken[0]
 	}
+	var userMgr *miniapp.StoreUserManager
+	if store != nil && store.DB != nil {
+		userMgr = miniapp.NewStoreUserManager(store.DB)
+	}
 	return &GameServer{
 		Ledger:      led,
 		Storage:     store,
+		UserManager: userMgr,
 		Territory:   NewTerritoryEngine(led),
 		BallEscape:  NewBallEscapeEngine(led, DefaultBallEscapeSecret),
 		Tower:       NewTowerEngine(led),

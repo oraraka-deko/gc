@@ -18,6 +18,8 @@ const (
 	NSWorkflowHistory = "wf:his:"  // Workflow run logs: wf:his:<instanceID>:<stepID>
 	NSOutbox          = "out:tx:"  // Transactional outbox messages: out:tx:<txID>
 	NSIdempotency     = "idm:"     // Durable idempotency keys: idm:<key>
+	NSUser            = "usr:pro:" // User profile data: usr:pro:<userID>
+	NSUserGifts       = "usr:gft:" // User collectible gifts: usr:gft:<userID>:<assetID>
 )
 
 var (
