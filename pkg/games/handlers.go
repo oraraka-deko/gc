@@ -2,13 +2,12 @@ package games
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
-
-	"gc/pkg/miniapp"
 )
 
-func getAuthUserID(r *http.Request) int64 {
-	user := miniapp.UserFromContext(r.Context())
+func (s *GameServer) getAuthUserID(r *http.Request) int64 {
+	user := s.ExtractUser(r)
 	if user != nil {
 		return user.ID
 	}
@@ -25,12 +24,14 @@ func (s *GameServer) HandleCoinFlip(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	userID := getAuthUserID(r)
+	userID := s.getAuthUserID(r)
 	resp, err := s.Coins.Flip(userID, req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.BroadcastBalance(r.Context(), userID)
+	log.Printf("[Coins] Flip: user=%d choice=%s win=%v mult=%.2f", userID, req.Choice, resp.IsWin, resp.Multiplier)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -40,12 +41,14 @@ func (s *GameServer) HandleCoinCashout(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		return
 	}
-	userID := getAuthUserID(r)
+	userID := s.getAuthUserID(r)
 	payout, err := s.Coins.CashOut(userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.BroadcastBalance(r.Context(), userID)
+	log.Printf("[Coins] Cashout: user=%d payout=%d", userID, payout)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"payout": payout})
 }
@@ -65,12 +68,14 @@ func (s *GameServer) HandleMinesStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	userID := getAuthUserID(r)
+	userID := s.getAuthUserID(r)
 	seedHash, err := s.Mines.StartGame(userID, req.Dimension, req.MineCount, req.Asset, req.Wager)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.BroadcastBalance(r.Context(), userID)
+	log.Printf("[Mines] Start: user=%d mines=%d wager=%d %s", userID, req.MineCount, req.Wager, req.Asset)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"seed_hash": seedHash})
 }
@@ -87,11 +92,14 @@ func (s *GameServer) HandleMinesReveal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	userID := getAuthUserID(r)
+	userID := s.getAuthUserID(r)
 	exploded, mult, payout, allMines, err := s.Mines.RevealTile(userID, req.TileIndex)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if exploded {
+		s.BroadcastBalance(r.Context(), userID)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
@@ -107,12 +115,14 @@ func (s *GameServer) HandleMinesCashout(w http.ResponseWriter, r *http.Request) 
 	if r.Method == http.MethodOptions {
 		return
 	}
-	userID := getAuthUserID(r)
+	userID := s.getAuthUserID(r)
 	payout, allMines, err := s.Mines.CashOut(userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.BroadcastBalance(r.Context(), userID)
+	log.Printf("[Mines] Cashout: user=%d payout=%d", userID, payout)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"payout": payout,
@@ -133,12 +143,14 @@ func (s *GameServer) HandlePlinkoDrop(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	userID := getAuthUserID(r)
+	userID := s.getAuthUserID(r)
 	path, mult, payout, err := s.Plinko.DropBall(userID, req.Asset, req.Wager)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.BroadcastBalance(r.Context(), userID)
+	log.Printf("[Plinko] Drop: user=%d wager=%d %s mult=%.2f payout=%d", userID, req.Wager, req.Asset, mult, payout)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"path":       path,
@@ -160,12 +172,14 @@ func (s *GameServer) HandleHLStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	userID := getAuthUserID(r)
+	userID := s.getAuthUserID(r)
 	card, err := s.HigherLower.StartRound(userID, req.Asset, req.Wager)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.BroadcastBalance(r.Context(), userID)
+	log.Printf("[HigherLower] Start: user=%d wager=%d %s", userID, req.Wager, req.Asset)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"card": card})
 }
@@ -182,11 +196,14 @@ func (s *GameServer) HandleHLGuess(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	userID := getAuthUserID(r)
+	userID := s.getAuthUserID(r)
 	nextCard, isWin, mult, payout, err := s.HigherLower.Guess(userID, req.GuessHigher)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if !isWin {
+		s.BroadcastBalance(r.Context(), userID)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
@@ -202,12 +219,14 @@ func (s *GameServer) HandleHLCashout(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		return
 	}
-	userID := getAuthUserID(r)
+	userID := s.getAuthUserID(r)
 	payout, err := s.HigherLower.CashOut(userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.BroadcastBalance(r.Context(), userID)
+	log.Printf("[HigherLower] Cashout: user=%d payout=%d", userID, payout)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"payout": payout})
 }
@@ -226,12 +245,15 @@ func (s *GameServer) HandleUpgradeSpin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	userID := getAuthUserID(r)
+	userID := s.getAuthUserID(r)
 	outcome, err := s.Upgrade.Spin(userID, req.InputValNano, req.TargetValNano, req.TargetGiftID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.BroadcastBalance(r.Context(), userID)
+	log.Printf("[Upgrade] Spin: user=%d success=%v input=%d target=%d gift=%s",
+		userID, outcome.IsSuccess, req.InputValNano, req.TargetValNano, req.TargetGiftID)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(outcome)
 }

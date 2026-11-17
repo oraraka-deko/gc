@@ -28,7 +28,7 @@ func New(store *storage.Storage) *Ledger {
 // GetAccount retrieves an account by ID, returning ErrAccountNotFound if absent.
 func (l *Ledger) GetAccount(ctx context.Context, accountID string) (*Account, error) {
 	key := []byte(storage.NSAccount + accountID)
-	data, err := l.store.Pebble.Get(key)
+	data, err := l.store.Store().Get(key)
 	if err != nil {
 		if err == storage.ErrNotFound {
 			return nil, ErrAccountNotFound
@@ -137,13 +137,13 @@ func (l *Ledger) RecordJournalEntry(ctx context.Context, entry JournalEntry) err
 
 	// 2. Check for duplicate entry or reference
 	jnlKey := []byte(storage.NSJournal + entry.ID)
-	if _, err := l.store.Pebble.Get(jnlKey); err == nil {
+	if _, err := l.store.Store().Get(jnlKey); err == nil {
 		return ErrDuplicateJournal
 	}
 
 	if entry.Reference != "" {
 		refKey := []byte("led:ref:" + entry.Reference)
-		if _, err := l.store.Pebble.Get(refKey); err == nil {
+		if _, err := l.store.Store().Get(refKey); err == nil {
 			return fmt.Errorf("ledger: reference %s already recorded", entry.Reference)
 		}
 	}
@@ -204,8 +204,8 @@ func (l *Ledger) RecordJournalEntry(ctx context.Context, entry JournalEntry) err
 		}
 	}
 
-	// 5. Apply changes into atomic Pebble Batch
-	batch := l.store.Pebble.NewBatch()
+	// 5. Apply changes into atomic Durable Batch (in-memory + Pebble WAL + Cloudflare D1 replication)
+	batch := l.store.Store().NewBatch()
 	defer batch.Close()
 
 	now := time.Now().UnixNano()
@@ -271,7 +271,7 @@ func (l *Ledger) Reserve(ctx context.Context, transferID string, fromUserID int6
 	}
 
 	penKey := []byte(storage.NSPending + transferID)
-	if _, err := l.store.Pebble.Get(penKey); err == nil {
+	if _, err := l.store.Store().Get(penKey); err == nil {
 		return nil, fmt.Errorf("transfer %s already exists", transferID)
 	}
 
@@ -307,7 +307,7 @@ func (l *Ledger) Reserve(ctx context.Context, transferID string, fromUserID int6
 	if err != nil {
 		return nil, err
 	}
-	if err := l.store.Pebble.Set(penKey, ptData, true); err != nil {
+	if err := l.store.Store().Set(penKey, ptData, true); err != nil {
 		return nil, err
 	}
 
@@ -317,7 +317,7 @@ func (l *Ledger) Reserve(ctx context.Context, transferID string, fromUserID int6
 // Settle releases locked funds to the destination account.
 func (l *Ledger) Settle(ctx context.Context, transferID string) error {
 	penKey := []byte(storage.NSPending + transferID)
-	ptData, err := l.store.Pebble.Get(penKey)
+	ptData, err := l.store.Store().Get(penKey)
 	if err != nil {
 		if err == storage.ErrNotFound {
 			return ErrTransferNotFound
@@ -355,13 +355,13 @@ func (l *Ledger) Settle(ctx context.Context, transferID string) error {
 		return err
 	}
 
-	return l.store.Pebble.Set(penKey, updatedData, true)
+	return l.store.Store().Set(penKey, updatedData, true)
 }
 
 // Void cancels a pending transfer and returns locked funds back to available balance.
 func (l *Ledger) Void(ctx context.Context, transferID string, reason string) error {
 	penKey := []byte(storage.NSPending + transferID)
-	ptData, err := l.store.Pebble.Get(penKey)
+	ptData, err := l.store.Store().Get(penKey)
 	if err != nil {
 		if err == storage.ErrNotFound {
 			return ErrTransferNotFound
@@ -404,7 +404,7 @@ func (l *Ledger) Void(ctx context.Context, transferID string, reason string) err
 		return err
 	}
 
-	return l.store.Pebble.Set(penKey, updatedData, true)
+	return l.store.Store().Set(penKey, updatedData, true)
 }
 
 // Deposit records an external inflow (Stars, on-chain TON/USDT) into a user's account.
@@ -476,10 +476,10 @@ func (l *Ledger) GetAccountHistory(ctx context.Context, accountID string, limit 
 	prefix := []byte(fmt.Sprintf("%s%s:", storage.NSAccountHistory, accountID))
 	var entries []JournalEntry
 
-	err := l.store.Pebble.PrefixScan(prefix, func(k, v []byte) bool {
+	err := l.store.Store().PrefixScan(prefix, func(k, v []byte) bool {
 		entryID := string(v)
 		jnlKey := []byte(storage.NSJournal + entryID)
-		jnlData, err := l.store.Pebble.Get(jnlKey)
+		jnlData, err := l.store.Store().Get(jnlKey)
 		if err == nil {
 			var je JournalEntry
 			if err := json.Unmarshal(jnlData, &je); err == nil {

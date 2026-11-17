@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -85,6 +86,39 @@ func DecodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
 	dec := json.NewDecoder(r.Body)
 	return dec.Decode(dst)
+}
+
+// ExtractUser resolves the authenticated Telegram user from context, headers, or query params.
+func (s *GameServer) ExtractUser(r *http.Request) *miniapp.WebAppUser {
+	if u := miniapp.UserFromContext(r.Context()); u != nil {
+		return u
+	}
+
+	var rawInitData string
+	if val := r.Header.Get("X-Telegram-Init-Data"); val != "" {
+		rawInitData = val
+	} else if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "tma ") {
+		rawInitData = strings.TrimPrefix(authHeader, "tma ")
+	} else if queryAuth := r.URL.Query().Get("auth"); queryAuth != "" {
+		rawInitData = queryAuth
+	}
+
+	if rawInitData != "" {
+		if s.BotToken != "" {
+			valid, err := miniapp.Validate(rawInitData, s.BotToken, 24*time.Hour)
+			if valid && err == nil {
+				if parsed, err := miniapp.ParseInitData(rawInitData); err == nil && parsed.User != nil {
+					return parsed.User
+				}
+			}
+		}
+		// Graceful fallback for sandbox/dev mode without bot token
+		if parsed, err := miniapp.ParseInitData(rawInitData); err == nil && parsed.User != nil {
+			return parsed.User
+		}
+	}
+
+	return nil
 }
 
 // RegisterRoutes binds all game API endpoints to an http.ServeMux.
@@ -169,9 +203,18 @@ func (s *GameServer) HandlePlaceBet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if req.UserID <= 0 {
-		http.Error(w, "User ID required", http.StatusUnauthorized)
-		return
+	user := s.ExtractUser(r)
+	if user != nil {
+		req.UserID = user.ID
+		if user.FirstName != "" {
+			req.FirstName = user.FirstName
+		}
+		if user.Username != nil && *user.Username != "" {
+			req.Username = *user.Username
+		}
+	} else if req.UserID <= 0 {
+		req.UserID = 99999999
+		req.FirstName = "TestPlayer"
 	}
 
 	err := s.Territory.PlaceBet(r.Context(), req.UserID, req.Username, req.FirstName, req.Avatar, currency, amountAtomic)
@@ -181,6 +224,8 @@ func (s *GameServer) HandlePlaceBet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.Territory.broadcast()
+	s.BroadcastBalance(r.Context(), req.UserID)
+	log.Printf("[Territory] Bet placed: user=%d amount=%d %s", req.UserID, amountAtomic, currency)
 
 	st := s.Territory.GetCurrentState()
 	w.Header().Set("Content-Type", "application/json")
@@ -232,6 +277,12 @@ func (s *GameServer) HandleBallEscapeStart(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if user := s.ExtractUser(r); user != nil {
+		req.UserID = user.ID
+	} else if req.UserID <= 0 {
+		req.UserID = 99999999
+	}
+
 	currency := NormalizeCurrency(req.Currency)
 	betAtomic := req.BetAtomic
 	if betAtomic == 0 && req.Bet > 0 {
@@ -247,6 +298,8 @@ func (s *GameServer) HandleBallEscapeStart(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.BroadcastBalance(r.Context(), req.UserID)
+	log.Printf("[BallEscape] Start: user=%d bet=%d %s diff=%s", req.UserID, betAtomic, currency, req.Difficulty)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(res)
@@ -279,6 +332,12 @@ func (s *GameServer) HandleBallEscapeClaim(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if user := s.ExtractUser(r); user != nil {
+		req.UserID = user.ID
+	} else if req.UserID <= 0 {
+		req.UserID = 99999999
+	}
+
 	betAtomic := req.BetAtomic
 	if betAtomic == 0 && req.Bet > 0 {
 		betAtomic = uint64(req.Bet)
@@ -289,6 +348,8 @@ func (s *GameServer) HandleBallEscapeClaim(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.BroadcastBalance(r.Context(), req.UserID)
+	log.Printf("[BallEscape] Claim: user=%d win=%v mult=%.2f payout=%d", req.UserID, req.IsWin, req.Multiplier, res.PayoutAtomic)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(res)
@@ -318,6 +379,12 @@ func (s *GameServer) HandleTowerStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if user := s.ExtractUser(r); user != nil {
+		req.UserID = user.ID
+	} else if req.UserID <= 0 {
+		req.UserID = 99999999
+	}
+
 	currency := NormalizeCurrency(req.Currency)
 	betAtomic := req.BetAtomic
 	if betAtomic == 0 && req.BetAmount > 0 {
@@ -333,6 +400,8 @@ func (s *GameServer) HandleTowerStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.BroadcastBalance(r.Context(), req.UserID)
+	log.Printf("[Tower] Start: user=%d bet=%d %s diff=%s", req.UserID, betAtomic, currency, req.Difficulty)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(res)
@@ -361,10 +430,19 @@ func (s *GameServer) HandleTowerPick(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if user := s.ExtractUser(r); user != nil {
+		req.UserID = user.ID
+	} else if req.UserID <= 0 {
+		req.UserID = 99999999
+	}
+
 	res, err := s.Tower.PickTile(r.Context(), req.UserID, req.RoundID, req.Step, req.Col)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if res.Status != "playing" {
+		s.BroadcastBalance(r.Context(), req.UserID)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -392,11 +470,19 @@ func (s *GameServer) HandleTowerCashout(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if user := s.ExtractUser(r); user != nil {
+		req.UserID = user.ID
+	} else if req.UserID <= 0 {
+		req.UserID = 99999999
+	}
+
 	res, err := s.Tower.Cashout(r.Context(), req.UserID, req.RoundID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.BroadcastBalance(r.Context(), req.UserID)
+	log.Printf("[Tower] Cashout: user=%d mult=%.2f payout=%d", req.UserID, res.Multiplier, res.PayoutAtomic)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(res)
@@ -417,16 +503,43 @@ func (s *GameServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 
+	user := s.ExtractUser(r)
+	var userID int64 = 99999999
+	firstName := "TestPlayer"
+	if user != nil {
+		userID = user.ID
+		firstName = user.FirstName
+	}
+	log.Printf("[WebSocket] Client connected: user=%d (%s) remote=%s", userID, firstName, r.RemoteAddr)
+
 	ch := make(chan []byte, 64)
 	done := make(chan struct{})
 
-	// Subscribe to Territory engine broadcasts
+	// Register with ClientHub and Territory engine
+	s.Hub.Register(userID, ch)
 	s.Territory.Subscribe(ch)
 	defer func() {
+		s.Hub.Unregister(userID, ch)
 		s.Territory.Unsubscribe(ch)
 		close(done)
 		_ = conn.Close()
+		log.Printf("[WebSocket] Client disconnected: user=%d", userID)
 	}()
+
+	// Push initial balance immediately on WS connect
+	tonNano := s.getUserBalance(r.Context(), userID, "ton_nano")
+	stars := s.getUserBalance(r.Context(), userID, "stars")
+	usdtMicro := s.getUserBalance(r.Context(), userID, "usdt_micro")
+	initPayload, _ := json.Marshal(map[string]any{
+		"type": "balance_updated",
+		"balances": map[string]any{
+			"ton_nano":   strconv.FormatUint(tonNano, 10),
+			"stars":      stars,
+			"usdt_micro": strconv.FormatUint(usdtMicro, 10),
+		},
+		"user_id": userID,
+	})
+	ch <- initPayload
 
 	// Dedicated single-writer goroutine (prevents concurrent write panics)
 	go func() {
@@ -468,15 +581,20 @@ func (s *GameServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		action, _ := incoming["action"].(string)
 		switch action {
+		case "sync":
+			s.BroadcastBalance(r.Context(), userID)
+
 		case "bet":
-			userID := parseUserID(incoming["userId"])
+			betUserID := parseUserID(incoming["userId"])
+			if betUserID <= 0 || user != nil {
+				betUserID = userID
+			}
 			username, _ := incoming["username"].(string)
-			firstName, _ := incoming["firstName"].(string)
 			avatar, _ := incoming["avatar"].(string)
 			currency, _ := incoming["currency"].(string)
 			amountFloat, _ := incoming["amount"].(float64)
 
-			if userID > 0 && amountFloat > 0 {
+			if betUserID > 0 && amountFloat > 0 {
 				currency = NormalizeCurrency(currency)
 				var amountAtomic uint64
 				if currency == ledger.AssetTON {
@@ -484,12 +602,16 @@ func (s *GameServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				} else {
 					amountAtomic = uint64(amountFloat)
 				}
-				_ = s.Territory.PlaceBet(r.Context(), userID, username, firstName, avatar, currency, amountAtomic)
+				_ = s.Territory.PlaceBet(r.Context(), betUserID, username, firstName, avatar, currency, amountAtomic)
 				s.Territory.broadcast()
+				s.BroadcastBalance(r.Context(), betUserID)
 			}
 
 		case "ball_escape_start":
-			userID := parseUserID(incoming["userId"])
+			reqUserID := parseUserID(incoming["userId"])
+			if reqUserID <= 0 || user != nil {
+				reqUserID = userID
+			}
 			currency, _ := incoming["currency"].(string)
 			diff, _ := incoming["difficulty"].(string)
 			betFloat, _ := incoming["bet"].(float64)
@@ -502,13 +624,14 @@ func (s *GameServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				betAtomic = uint64(betFloat)
 			}
 
-			res, err := s.BallEscape.StartRound(r.Context(), userID, currency, betAtomic, diff)
+			res, err := s.BallEscape.StartRound(r.Context(), reqUserID, currency, betAtomic, diff)
 			if err == nil {
 				data, _ := json.Marshal(map[string]any{
 					"type":   "ball_escape_started",
 					"result": res,
 				})
 				ch <- data
+				s.BroadcastBalance(r.Context(), reqUserID)
 			} else {
 				data, _ := json.Marshal(map[string]any{
 					"type":  "ball_escape_error",
@@ -518,7 +641,10 @@ func (s *GameServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 
 		case "ball_escape_claim":
-			userID := parseUserID(incoming["userId"])
+			reqUserID := parseUserID(incoming["userId"])
+			if reqUserID <= 0 || user != nil {
+				reqUserID = userID
+			}
 			roundID := int(parseUserID(incoming["roundId"]))
 			serverSeed, _ := incoming["serverSeed"].(string)
 			sig, _ := incoming["sig"].(string)
@@ -527,13 +653,14 @@ func (s *GameServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			betFloat, _ := incoming["bet"].(float64)
 
 			betAtomic := uint64(betFloat)
-			res, err := s.BallEscape.ClaimRound(r.Context(), userID, roundID, serverSeed, sig, mult, isWin, betAtomic)
+			res, err := s.BallEscape.ClaimRound(r.Context(), reqUserID, roundID, serverSeed, sig, mult, isWin, betAtomic)
 			if err == nil {
 				data, _ := json.Marshal(map[string]any{
 					"type":   "ball_escape_claimed",
 					"result": res,
 				})
 				ch <- data
+				s.BroadcastBalance(r.Context(), reqUserID)
 			} else {
 				data, _ := json.Marshal(map[string]any{
 					"type":  "ball_escape_error",

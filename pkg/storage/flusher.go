@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"runtime"
 	"sync"
@@ -113,7 +114,9 @@ func (f *LoadAwareFlusher) evalAndFlush() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = f.flushNextBatch(ctx)
+	if err := f.flushNextBatch(ctx); err != nil {
+		log.Printf("[Flusher ERROR] WriteBehind flush to Cloudflare failed: %v", err)
+	}
 }
 
 // flushNextBatch extracts up to MaxBatchSize coalesced ops and posts them to Cloudflare.
@@ -186,6 +189,7 @@ func (f *LoadAwareFlusher) sendToCloudflare(ctx context.Context, payload CFBatch
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "TMA-Backend-StorageGateway/1.0")
 	if f.cfg.CloudflareToken != "" {
 		req.Header.Set("Authorization", "Bearer "+f.cfg.CloudflareToken)
 	}
@@ -200,6 +204,8 @@ func (f *LoadAwareFlusher) sendToCloudflare(ctx context.Context, payload CFBatch
 		return fmt.Errorf("writebehind cloudflare returned status: %d", resp.StatusCode)
 	}
 
+	log.Printf("[Flusher] Flushed %d upserts, %d deletes to Cloudflare D1/DO (%s)",
+		len(payload.Upserts), len(payload.Deletes), f.cfg.CloudflareEndpoint)
 	return nil
 }
 

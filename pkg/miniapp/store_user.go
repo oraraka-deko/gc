@@ -109,3 +109,34 @@ func (m *StoreUserManager) EnsureUser(ctx context.Context, webUser *WebAppUser) 
 
 	return user, nil
 }
+
+// UserTaskKey returns canonical key for a user's task progress.
+func UserTaskKey(userID int64, taskID string) []byte {
+	return []byte(fmt.Sprintf("usr:tsk:%d:%s", userID, taskID))
+}
+
+// SaveTaskProgress persists a user's task progress into RAM and WriteBehindStore.
+func (m *StoreUserManager) SaveTaskProgress(ctx context.Context, p UserTaskProgress) error {
+	p.LastProgressUpdate = time.Now().UnixMilli()
+	data, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return m.store.Set(UserTaskKey(p.UserID, p.TaskID), data, false)
+}
+
+// GetUserTasks returns all recorded task progress for a user via fast prefix scan.
+func (m *StoreUserManager) GetUserTasks(ctx context.Context, userID int64) ([]UserTaskProgress, error) {
+	prefix := []byte(fmt.Sprintf("usr:tsk:%d:", userID))
+	var tasks []UserTaskProgress
+
+	err := m.store.PrefixScan(prefix, func(key, val []byte) bool {
+		var p UserTaskProgress
+		if err := json.Unmarshal(val, &p); err == nil {
+			tasks = append(tasks, p)
+		}
+		return true
+	})
+
+	return tasks, err
+}

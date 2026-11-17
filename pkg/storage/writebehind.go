@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log"
 	"net/http"
 	"sort"
 	"sync"
@@ -182,10 +183,13 @@ func NewWriteBehindStore(pebbleStore *PebbleStore, cfg WriteBehindConfig) (*Writ
 		return nil, fmt.Errorf("failed to hydrate from local pebble: %w", err)
 	}
 
-	// 2. If local Pebble was empty and Cloudflare is configured, hydrate from Cloudflare
-	if w.totalMemoryKeys() == 0 && cfg.CloudflareEndpoint != "" {
-		_ = w.hydrateFromCloudflare(context.Background(), "")
+	// 2. Hydrate from Cloudflare if configured (to catch up on any mutations from Cloudflare D1/KV)
+	if cfg.CloudflareEndpoint != "" {
+		if err := w.hydrateFromCloudflare(context.Background(), ""); err != nil {
+			log.Printf("[Hydration WARNING] Failed to hydrate from Cloudflare: %v", err)
+		}
 	}
+	log.Printf("[WriteBehindStore] Ready with %d keys active in RAM shards", w.totalMemoryKeys())
 
 	// 3. Start background load-aware flusher
 	w.flusher = newLoadAwareFlusher(w, cfg)
@@ -240,6 +244,7 @@ func (w *WriteBehindStore) hydrateFromCloudflare(ctx context.Context, prefix str
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "TMA-Backend-StorageGateway/1.0")
 	if w.cfg.CloudflareToken != "" {
 		req.Header.Set("Authorization", "Bearer "+w.cfg.CloudflareToken)
 	}
@@ -280,6 +285,7 @@ func (w *WriteBehindStore) hydrateFromCloudflare(ctx context.Context, prefix str
 	}
 
 	_ = batch.Commit(false)
+	log.Printf("[Hydration] Successfully hydrated %d keys from Cloudflare D1 into RAM & Pebble", len(res.Items))
 	return nil
 }
 

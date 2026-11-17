@@ -4,12 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 
 	"gc/pkg/ledger"
 	"gc/pkg/miniapp"
@@ -25,36 +24,36 @@ type UserSyncResponse struct {
 	ServerTime int64            `json:"server_time"`
 }
 
-// ClientHub maintains active WebSocket subscriber connections keyed by Telegram UserID.
+// ClientHub maintains active WebSocket subscriber channels keyed by Telegram UserID.
 type ClientHub struct {
 	mu      sync.RWMutex
-	clients map[int64]map[*websocket.Conn]bool
+	clients map[int64]map[chan []byte]bool
 }
 
 // NewClientHub creates an empty thread-safe connection hub.
 func NewClientHub() *ClientHub {
 	return &ClientHub{
-		clients: make(map[int64]map[*websocket.Conn]bool),
+		clients: make(map[int64]map[chan []byte]bool),
 	}
 }
 
-// Register adds an active websocket connection under a user id.
-func (h *ClientHub) Register(userID int64, conn *websocket.Conn) {
+// Register adds an active websocket writer channel under a user id.
+func (h *ClientHub) Register(userID int64, ch chan []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if _, ok := h.clients[userID]; !ok {
-		h.clients[userID] = make(map[*websocket.Conn]bool)
+		h.clients[userID] = make(map[chan []byte]bool)
 	}
-	h.clients[userID][conn] = true
+	h.clients[userID][ch] = true
 }
 
-// Unregister cleanly removes a websocket connection.
-func (h *ClientHub) Unregister(userID int64, conn *websocket.Conn) {
+// Unregister cleanly removes a websocket writer channel.
+func (h *ClientHub) Unregister(userID int64, ch chan []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if conns, ok := h.clients[userID]; ok {
-		delete(conns, conn)
-		if len(conns) == 0 {
+	if chans, ok := h.clients[userID]; ok {
+		delete(chans, ch)
+		if len(chans) == 0 {
 			delete(h.clients, userID)
 		}
 	}
@@ -63,8 +62,8 @@ func (h *ClientHub) Unregister(userID int64, conn *websocket.Conn) {
 // BroadcastToUser sends a JSON payload to all active connections for a given user.
 func (h *ClientHub) BroadcastToUser(userID int64, payload any) {
 	h.mu.RLock()
-	conns, ok := h.clients[userID]
-	if !ok || len(conns) == 0 {
+	chans, ok := h.clients[userID]
+	if !ok || len(chans) == 0 {
 		h.mu.RUnlock()
 		return
 	}
@@ -75,16 +74,36 @@ func (h *ClientHub) BroadcastToUser(userID int64, payload any) {
 		return
 	}
 
-	// Copy pointers for safe write iteration
-	activeList := make([]*websocket.Conn, 0, len(conns))
-	for c := range conns {
+	activeList := make([]chan []byte, 0, len(chans))
+	for c := range chans {
 		activeList = append(activeList, c)
 	}
 	h.mu.RUnlock()
 
-	for _, conn := range activeList {
-		_ = conn.WriteMessage(websocket.TextMessage, data)
+	for _, ch := range activeList {
+		select {
+		case ch <- data:
+		default: // non-blocking write to prevent stalling
+		}
 	}
+}
+
+// BroadcastBalance queries current user balances from Ledger and pushes to all active user sessions.
+func (s *GameServer) BroadcastBalance(ctx context.Context, userID int64) {
+	tonNano := s.getUserBalance(ctx, userID, "ton_nano")
+	stars := s.getUserBalance(ctx, userID, "stars")
+	usdtMicro := s.getUserBalance(ctx, userID, "usdt_micro")
+
+	payload := map[string]any{
+		"type": "balance_updated",
+		"balances": map[string]any{
+			"ton_nano":   strconv.FormatUint(tonNano, 10),
+			"stars":      stars,
+			"usdt_micro": strconv.FormatUint(usdtMicro, 10),
+		},
+		"user_id": userID,
+	}
+	s.Hub.BroadcastToUser(userID, payload)
 }
 
 // getUserBalance helper queries the double-entry account or initializes with sandbox funds if brand new
@@ -126,14 +145,14 @@ func (s *GameServer) HandleUserSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := miniapp.UserFromContext(r.Context())
+	user := s.ExtractUser(r)
 	if user == nil {
-		// Temporary fallback for local testing if unauthenticated
 		user = &miniapp.WebAppUser{
 			ID:        99999999,
 			FirstName: "TestPlayer",
 		}
 	}
+	log.Printf("[API] /api/user/sync called for user=%d (%s)", user.ID, user.FirstName)
 
 	ctx := r.Context()
 	tonNano := s.getUserBalance(ctx, user.ID, "ton_nano")
@@ -180,6 +199,9 @@ func (s *GameServer) HandleUserSync(w http.ResponseWriter, r *http.Request) {
 		Gifts:      giftList,
 		ServerTime: time.Now().Unix(),
 	}
+
+	log.Printf("[API] /api/user/sync returning: user=%d, tonNano=%d, stars=%d, usdtMicro=%d, gifts=%d",
+		user.ID, tonNano, stars, usdtMicro, len(giftList))
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(res)

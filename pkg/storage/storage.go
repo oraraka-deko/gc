@@ -63,6 +63,51 @@ func New(cfg Config) (*Storage, error) {
 	}, nil
 }
 
+// Store returns the primary DurableStore (WriteBehindStore with RAM shards and Cloudflare sync),
+// or falls back to PebbleStore if DB is not configured (e.g. in isolated unit tests).
+func (s *Storage) Store() DurableStore {
+	if s != nil && s.DB != nil {
+		return s.DB
+	}
+	if s != nil && s.Pebble != nil {
+		return &pebbleDurableAdapter{s.Pebble}
+	}
+	return nil
+}
+
+// pebbleDurableAdapter wraps PebbleStore to satisfy the DurableStore interface.
+type pebbleDurableAdapter struct {
+	pebble *PebbleStore
+}
+
+func (a *pebbleDurableAdapter) Get(key []byte) ([]byte, error) {
+	return a.pebble.Get(key)
+}
+
+func (a *pebbleDurableAdapter) Set(key, val []byte, sync bool) error {
+	return a.pebble.Set(key, val, sync)
+}
+
+func (a *pebbleDurableAdapter) Delete(key []byte, sync bool) error {
+	return a.pebble.Delete(key, sync)
+}
+
+func (a *pebbleDurableAdapter) PrefixScan(prefix []byte, fn func(key, val []byte) bool) error {
+	return a.pebble.PrefixScan(prefix, fn)
+}
+
+func (a *pebbleDurableAdapter) NewBatch() DurableBatch {
+	return a.pebble.NewBatch()
+}
+
+func (a *pebbleDurableAdapter) Flush(ctx context.Context) error {
+	return a.pebble.Flush()
+}
+
+func (a *pebbleDurableAdapter) Close() error {
+	return a.pebble.Close()
+}
+
 // Flush forces an immediate drain of pending dirty records to Cloudflare.
 func (s *Storage) Flush(ctx context.Context) error {
 	if s.DB != nil {

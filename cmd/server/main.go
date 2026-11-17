@@ -42,9 +42,6 @@ func main() {
 	if cfToken == "" {
 		cfToken = os.Getenv("CF_STORAGE_TOKEN")
 	}
-	if cfToken == "" {
-		cfToken = ""
-	}
 
 	log.Printf("================================================================================")
 	log.Printf(" Starting MiniApp Unified Backend Server on :%d", *port)
